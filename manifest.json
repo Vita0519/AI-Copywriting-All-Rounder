@@ -5,7 +5,6 @@
   "author": "vita0519",
   "description": "接入AI，支持自定义提示词模版。内置小红书爆款风格，支持一键润色、扩写。",
   "main": "main.js",
-  "minHostVersion": "0.3.0",
   "homepage": "https://github.com/Vita0519/AI-Copywriting-All-Rounder",
   "repository": "https://github.com/Vita0519/AI-Copywriting-All-Rounder"
 }
