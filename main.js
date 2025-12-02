@@ -1,287 +1,412 @@
 // main.js
 
-// ---------------- 默认配置与常量 ----------------
+// ---------------- 常量与配置 ----------------
+
+const CONFIG_KEY = 'ai_rewriter_config';
+const TEMPLATE_KEY = 'ai_rewriter_templates';
 
 const DEFAULT_CONFIG = {
-  baseUrl: 'https://api.openai.com/v1',
-  model: 'gpt-3.5-turbo',
-  apiKey: ''
+  baseUrl: 'https://api.voct.top/v1',
+  model: 'gemini-2.5-pro',
+  apiKey: 'sk-Rn7R6m4tZ5qytBf8Csa5S2gf1njwAVPoFFOzCYi7WOdGxF9G'
 };
 
-const DEFAULT_TEMPLATE_ID = 'default_xhs';
+// 默认模版
+const DEFAULT_TEMPLATES = [
+  {
+    id: 'xhs_md',
+    name: '✨ 小红书 (Markdown)',
+    content: `你是一个小红书爆款文案专家。请将用户选中的内容改写为小红书风格。
+要求：
+1. **格式强制**：必须使用标准的 Markdown 语法。
+2. **语气**：热情、活泼、口语化，多用“家人们”、“绝绝子”。
+3. **Emoji**：全文穿插大量 Emoji。
+4. **结构**：痛点引入 -> 核心种草 -> 结尾互动 + 标签。
+5. **注意**：直接输出正文，不要把整个回答包裹在代码块中。`
+  },
+  {
+    id: 'email_formal',
+    name: '📧 商务邮件润色',
+    content: `请将这段文本润色为专业的商务邮件风格。
+要求：
+1. 语气礼貌、专业、客观。
+2. 使用标准的 Markdown 格式。
+3. 修正错别字和语病。`
+  }
+];
 
-// 默认的小红书提示词
-const XHS_PROMPT = `
-你是一个拥有百万粉丝的小红书博主，也是文案写作专家。请根据用户输入的主题或内容，创作一篇小红书风格的笔记。
-
-要求如下：
-1. 标题：极具吸引力，使用“二极管”标题法（如：真的绝了！后悔没早知道！），包含Emoji。
-2. 语气：热情、活泼、亲切、分享欲强。多用“家人们”、“集美们”、“绝绝子”、“yyds”、“一定要冲”等口语化词汇。
-3. 排版：
-   - 全文大量使用Emoji（🌈✨🔥💡📌等）穿插在文字中。
-   - 适当分段，使用简单的符号（如 👉、✅）列出重点。
-   - 视觉上要轻松易读，拒绝大段纯文字。
-4. 结构：
-   - 吸引人的标题
-   - 痛点/场景引入
-   - 核心干货/种草点
-   - 结尾互动（求关注/点赞）
-   - 底部堆砌 5-8 个相关话题标签（#Tag）。
-5. 输出：不要输出Markdown代码块，直接输出正文内容。
-`;
-
-// 用于存储销毁函数，以便刷新菜单
 let menuDisposers = [];
 
 // ---------------- 生命周期 ----------------
 
 export async function activate(context) {
-  // 初始化模版管理器
-  const templateManager = new TemplateManager(context);
-  await templateManager.init();
-
+  // 初始化数据
+  await initTemplates(context);
   // 渲染菜单
-  await refreshMenus(context, templateManager);
-
-  context.ui.notice('AI 文案助手已激活 (支持自定义模版)', 'ok');
+  await refreshMenus(context);
+  context.ui.notice('AI 改写助手已激活', 'ok');
 }
 
 export function deactivate() {
-  // 清理所有注册的菜单
   disposeMenus();
 }
 
-// ---------------- 菜单管理逻辑 ----------------
+// ---------------- 菜单逻辑 ----------------
 
 function disposeMenus() {
-  menuDisposers.forEach(dispose => dispose());
+  menuDisposers.forEach(d => d && d());
   menuDisposers = [];
 }
 
-/**
- * 刷新菜单：当模版发生变化时调用此方法重新生成菜单结构
- */
-async function refreshMenus(context, templateManager) {
-  // 1. 清理旧菜单
+async function refreshMenus(context) {
   disposeMenus();
+  const templates = await getTemplates(context);
 
-  const templates = templateManager.getAll();
-
-  // 2. 构造【生成文案】的子菜单项
-  const generateSubmenus = templates.map(tpl => ({
+  // 1. 生成动作菜单
+  const actionItems = templates.map(tpl => ({
     label: tpl.name,
-    note: tpl.id === DEFAULT_TEMPLATE_ID ? '默认' : '',
-    onClick: async () => {
-      await handleGenerateFromTopic(context, tpl.content);
+    icon: '🪄',
+    onClick: async (ctx) => {
+      const selection = ctx?.selectedText || context.getSelection().text;
+      await handleSelection(context, selection, tpl.content);
     }
   }));
 
-  // 3. 构造【删除模版】的子菜单项
-  // 过滤掉默认模版，默认模版不允许删除
-  const deleteSubmenus = templates
-    .filter(t => t.id !== DEFAULT_TEMPLATE_ID)
-    .map(tpl => ({
-      label: `🗑️ 删除: ${tpl.name}`,
-      onClick: async () => {
-        const confirm = await context.ui.confirm(`确定要删除模版“${tpl.name}”吗？`);
-        if (confirm) {
-          await templateManager.delete(tpl.id);
-          await refreshMenus(context, templateManager); // 刷新菜单
-          context.ui.notice('模版已删除', 'ok');
-        }
-      }
-    }));
+  // 2. 生成管理菜单
+  const manageItems = templates.map(tpl => ({
+    label: `📝 编辑/删除: ${tpl.name}`,
+    onClick: async () => handleEditTemplate(context, tpl)
+  }));
 
-  if (deleteSubmenus.length === 0) {
-    deleteSubmenus.push({ label: '暂无自定义模版', disabled: true });
-  }
-
-  // 4. 注册主菜单 (Main Menu)
-  const removeMainMenu = context.addMenuItem({
-    label: 'AI 文案助手',
+  // 3. 注册主菜单
+  const mainMenu = context.addMenuItem({
+    label: 'AI 改写',
     children: [
-      { type: 'group', label: '✨ 根据主题生成' },
-      ...generateSubmenus, // 动态展开所有模版
+      { type: 'group', label: '立即生成' },
+      ...actionItems,
       { type: 'divider' },
-      { type: 'group', label: '🔧 设置与管理' },
+      { type: 'group', label: '配置与管理' },
       {
-        label: '模版管理 (删除)',
-        children: deleteSubmenus
+        label: '➕ 新增模版 (表单)',
+        onClick: () => handleAddTemplate(context)
       },
       {
-        label: '⚙️ 配置 API Key',
-        onClick: () => openSettings(context)
-      }
-    ]
-  });
-  menuDisposers.push(removeMainMenu);
-
-  // 5. 构造【右键润色】的子菜单项
-  const rewriteSubmenus = templates.map(tpl => ({
-    label: tpl.name,
-    icon: '✨',
-    onClick: async (ctx) => {
-      await handleRewriteSelection(context, ctx.selectedText, tpl.content);
-    }
-  }));
-
-  // 6. 注册右键菜单 (Context Menu)
-  const removeContextMenu = context.addContextMenuItem({
-    label: 'AI 文案助手',
-    icon: '🤖',
-    children: [
-      { type: 'group', label: '润色/改写为...' },
-      ...rewriteSubmenus,
+        label: '🔧 管理模版',
+        children: manageItems
+      },
       { type: 'divider' },
       {
-        label: '➕ 将选中设为新模版',
-        icon: '💾',
-        condition: (ctx) => ctx.selectedText.length > 5, // 至少选中5个字才能存为模版
-        onClick: async (ctx) => {
-          await handleSaveSelectionAsTemplate(context, templateManager, ctx.selectedText);
-        }
+        label: '⚙️ API 设置',
+        onClick: () => handleConfig(context) // 点击直接弹窗配置
       }
     ]
   });
-  menuDisposers.push(removeContextMenu);
+  menuDisposers.push(mainMenu);
+
+  // 4. 注册右键菜单
+  const contextMenu = context.addContextMenuItem({
+    label: 'AI 改写为...',
+    icon: '📝',
+    condition: (ctx) => ctx.selectedText && ctx.selectedText.length > 0,
+    children: [
+      ...actionItems,
+      { type: 'divider' },
+      {
+        label: '保存选中为新提示词',
+        icon: '💾',
+        onClick: async (ctx) => handleAddTemplate(context, '', ctx.selectedText)
+      }
+    ]
+  });
+  menuDisposers.push(contextMenu);
 }
 
-// ---------------- 业务逻辑处理 ----------------
+// ---------------- 业务逻辑 (弹窗驱动) ----------------
 
 /**
- * 将当前选中的文本保存为新模版
+ * 处理 API 配置 (使用自定义弹窗)
  */
-async function handleSaveSelectionAsTemplate(context, manager, text) {
-  // 提示输入模版名称
-  // 由于 flyMD 暂时没有 input dialog API，使用原生 prompt
-  const name = prompt('请输入新模版名称 (例如：知乎高赞体):');
+async function handleConfig(context) {
+  const current = await getConfig(context);
+
+  try {
+    const formData = await showFormDialog({
+      title: '⚙️ API 配置',
+      fields: [
+        { key: 'baseUrl', label: 'API Base URL', value: current.baseUrl, placeholder: 'https://api.openai.com/v1' },
+        { key: 'model', label: '模型名称 (Model)', value: current.model, placeholder: 'gpt-3.5-turbo' },
+        { key: 'apiKey', label: 'API Key', value: current.apiKey, type: 'password', placeholder: 'sk-...' }
+      ]
+    });
+
+    if (formData) {
+      await context.storage.set(CONFIG_KEY, formData);
+      context.ui.notice('配置已保存 ✅', 'ok');
+    }
+  } catch (e) {
+    // 用户取消或关闭
+    console.log('User cancelled config');
+  }
+}
+
+/**
+ * 新增模版 (使用自定义弹窗)
+ */
+async function handleAddTemplate(context, defaultName = '', defaultContent = '') {
+  try {
+    const formData = await showFormDialog({
+      title: '➕ 新增提示词模版',
+      fields: [
+        { key: 'name', label: '模版标题', value: defaultName, placeholder: '例如：知乎体' },
+        { key: 'content', label: '提示词内容 (System Prompt)', value: defaultContent, type: 'textarea', height: '150px' }
+      ]
+    });
+
+    if (formData && formData.name && formData.content) {
+      const tpls = await getTemplates(context);
+      tpls.push({
+        id: Date.now().toString(),
+        name: formData.name,
+        content: formData.content
+      });
+      await saveTemplates(context, tpls);
+      await refreshMenus(context);
+      context.ui.notice(`模版“${formData.name}”已添加`, 'ok');
+    }
+  } catch (e) {
+    // cancelled
+  }
+}
+
+/**
+ * 编辑模版 (使用自定义弹窗)
+ */
+async function handleEditTemplate(context, tpl) {
+  // 先询问是要编辑还是删除
+  // 这里暂时还用 confirm，因为这只是一个简单的二选一分支
+  const wantDelete = await context.ui.confirm(`您想删除模版“${tpl.name}”吗？\n点击 [确定] 删除，点击 [取消] 编辑。`);
   
-  if (!name || !name.trim()) {
-    context.ui.notice('已取消保存', 'err');
+  if (wantDelete) {
+    const tpls = await getTemplates(context);
+    const filtered = tpls.filter(t => t.id !== tpl.id);
+    await saveTemplates(context, filtered);
+    await refreshMenus(context);
+    context.ui.notice('模版已删除', 'ok');
     return;
   }
 
-  const newTpl = {
-    id: Date.now().toString(), // 简单生成唯一ID
-    name: name.trim(),
-    content: text.trim()
-  };
+  // 进入编辑模式
+  try {
+    const formData = await showFormDialog({
+      title: '📝 编辑模版',
+      fields: [
+        { key: 'name', label: '模版标题', value: tpl.name },
+        { key: 'content', label: '提示词内容', value: tpl.content, type: 'textarea', height: '150px' }
+      ]
+    });
 
-  await manager.add(newTpl);
-  await refreshMenus(context, manager); // 关键：刷新菜单以显示新模版
-  
-  context.ui.showNotification(`模版“${newTpl.name}”保存成功！`, { type: 'success' });
+    if (formData) {
+      const tpls = await getTemplates(context);
+      const idx = tpls.findIndex(t => t.id === tpl.id);
+      if (idx !== -1) {
+        tpls[idx] = { ...tpls[idx], name: formData.name, content: formData.content };
+        await saveTemplates(context, tpls);
+        await refreshMenus(context);
+        context.ui.notice('模版更新成功', 'ok');
+      }
+    }
+  } catch (e) {
+    // cancelled
+  }
 }
 
-async function handleGenerateFromTopic(context, systemPrompt) {
-  const config = await loadConfig(context);
-  if (!config.apiKey) return missingKeyHandler(context);
+async function handleSelection(context, selectedText, systemPrompt) {
+  if (!selectedText) {
+    context.ui.showNotification('请先选中文字', { type: 'error' });
+    return;
+  }
+  const config = await getConfig(context);
+  if (!config.apiKey) {
+    context.ui.showNotification('API 未配置', { type: 'error' });
+    handleConfig(context);
+    return;
+  }
 
-  const topic = prompt('请输入主题或关键词：');
-  if (!topic) return;
-
-  await callAIAndInsert(context, config, topic, systemPrompt);
-}
-
-async function handleRewriteSelection(context, selectedText, systemPrompt) {
-  const config = await loadConfig(context);
-  if (!config.apiKey) return missingKeyHandler(context);
-
-  const loadingId = context.ui.showNotification('AI 正在思考中... 🧠', { type: 'info', duration: 0 });
+  const loadingId = context.ui.showNotification('AI 正在改写中... ⏳', { type: 'info', duration: 0 });
 
   try {
-    const result = await requestOpenAI(context, config, selectedText, systemPrompt);
-    // 替换选区
+    const result = await requestAI(context, config, selectedText, systemPrompt);
     const sel = context.getSelection();
     context.replaceRange(sel.start, sel.end, result);
-    
     context.ui.hideNotification(loadingId);
-    context.ui.showNotification('改写完成 ✨', { type: 'success' });
+    context.ui.showNotification('成功 ✨', { type: 'success' });
   } catch (error) {
     context.ui.hideNotification(loadingId);
-    context.ui.showNotification('失败: ' + error.message, { type: 'error' });
+    context.ui.showNotification('错误: ' + error.message, { type: 'error', duration: 4000 });
   }
 }
 
-async function callAIAndInsert(context, config, topic, systemPrompt) {
-  const loadingId = context.ui.showNotification(`正在生成...`, { type: 'info', duration: 0 });
+// ---------------- UI 工具库 (自定义表单弹窗) ----------------
 
-  try {
-    // 构造 Prompt：如果是生成模式，我们告诉 AI 用户输入的是主题
-    const userPrompt = `请根据以下主题创作：${topic}`;
-    const result = await requestOpenAI(context, config, userPrompt, systemPrompt);
-    
-    context.insertAtCursor(result);
-    context.ui.hideNotification(loadingId);
-    context.ui.showNotification('生成完毕 ✨', { type: 'success' });
-  } catch (error) {
-    context.ui.hideNotification(loadingId);
-    context.ui.showNotification('请求失败: ' + error.message, { type: 'error' });
-  }
-}
+/**
+ * 在 DOM 中创建一个模态表单
+ * @param {Object} options { title, fields: [{key, label, value, type, placeholder, height}] }
+ * @returns Promise<Object|null>
+ */
+function showFormDialog({ title, fields }) {
+  return new Promise((resolve, reject) => {
+    // 1. 创建遮罩层
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5); z-index: 10000;
+      display: flex; align-items: center; justify-content: center;
+      font-family: system-ui, sans-serif;
+    `;
 
-// ---------------- 模版管理器 (Data Layer) ----------------
-
-class TemplateManager {
-  constructor(context) {
-    this.context = context;
-    this.storageKey = 'custom_templates';
-    this.templates = [];
-  }
-
-  async init() {
-    const saved = await this.context.storage.get(this.storageKey);
-    if (saved && Array.isArray(saved)) {
-      this.templates = saved;
+    // 2. 创建表单容器
+    const modal = document.createElement('div');
+    modal.style.cssText = `
+      background: var(--bg, #fff); 
+      color: var(--fg, #333);
+      padding: 20px; border-radius: 8px;
+      width: 400px; max-width: 90vw;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+      display: flex; flex-direction: column; gap: 15px;
+    `;
+    // 适配暗色模式简单的处理
+    if (document.body.classList.contains('dark')) {
+        modal.style.background = '#2d2d2d';
+        modal.style.color = '#fff';
     }
-    // 确保始终包含默认的小红书模版，且放在第一位
-    this.ensureDefault();
-  }
 
-  ensureDefault() {
-    // 检查是否已有默认模版
-    const hasDefault = this.templates.some(t => t.id === DEFAULT_TEMPLATE_ID);
-    if (!hasDefault) {
-      this.templates.unshift({
-        id: DEFAULT_TEMPLATE_ID,
-        name: '✨ 小红书爆款 (默认)',
-        content: XHS_PROMPT
+    // 标题
+    const header = document.createElement('h3');
+    header.textContent = title;
+    header.style.margin = '0 0 5px 0';
+    modal.appendChild(header);
+
+    // 字段生成
+    const inputMap = {};
+
+    fields.forEach(field => {
+      const wrapper = document.createElement('div');
+      wrapper.style.display = 'flex';
+      wrapper.style.flexDirection = 'column';
+      wrapper.style.gap = '5px';
+
+      const label = document.createElement('label');
+      label.textContent = field.label;
+      label.style.fontSize = '12px';
+      label.style.fontWeight = 'bold';
+      label.style.opacity = '0.8';
+
+      let input;
+      if (field.type === 'textarea') {
+        input = document.createElement('textarea');
+        input.style.height = field.height || '80px';
+        input.style.resize = 'vertical';
+      } else {
+        input = document.createElement('input');
+        input.type = field.type || 'text';
+      }
+
+      // 通用 Input 样式
+      input.style.padding = '8px';
+      input.style.border = '1px solid #ccc';
+      input.style.borderRadius = '4px';
+      input.style.background = 'transparent';
+      input.style.color = 'inherit';
+      input.value = field.value || '';
+      if (field.placeholder) input.placeholder = field.placeholder;
+
+      inputMap[field.key] = input;
+      wrapper.appendChild(label);
+      wrapper.appendChild(input);
+      modal.appendChild(wrapper);
+    });
+
+    // 按钮区域
+    const btnRow = document.createElement('div');
+    btnRow.style.display = 'flex';
+    btnRow.style.justifyContent = 'flex-end';
+    btnRow.style.gap = '10px';
+    btnRow.style.marginTop = '10px';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = '取消';
+    cancelBtn.style.padding = '6px 12px';
+    cancelBtn.style.cursor = 'pointer';
+    cancelBtn.onclick = () => {
+      document.body.removeChild(overlay);
+      reject(new Error('User cancelled'));
+    };
+
+    const saveBtn = document.createElement('button');
+    saveBtn.textContent = '保存';
+    saveBtn.style.padding = '6px 16px';
+    saveBtn.style.background = '#0ea5e9'; // flyMD blue
+    saveBtn.style.color = '#fff';
+    saveBtn.style.border = 'none';
+    saveBtn.style.borderRadius = '4px';
+    saveBtn.style.cursor = 'pointer';
+    saveBtn.onclick = () => {
+      const result = {};
+      Object.keys(inputMap).forEach(key => {
+        result[key] = inputMap[key].value;
       });
-    }
-  }
+      document.body.removeChild(overlay);
+      resolve(result);
+    };
 
-  getAll() {
-    return this.templates;
-  }
-
-  async add(template) {
-    this.templates.push(template);
-    await this.save();
-  }
-
-  async delete(id) {
-    if (id === DEFAULT_TEMPLATE_ID) return; // 禁止删除默认
-    this.templates = this.templates.filter(t => t.id !== id);
-    await this.save();
-  }
-
-  async save() {
-    // 保存前移除默认模版（可选，为了节省空间，或者每次 init 时合并），
-    // 这里选择全部保存，简化逻辑
-    await this.context.storage.set(this.storageKey, this.templates);
-  }
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(saveBtn);
+    modal.appendChild(btnRow);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    
+    // 聚焦第一个输入框
+    setTimeout(() => {
+        const firstInput = modal.querySelector('input, textarea');
+        if(firstInput) firstInput.focus();
+    }, 50);
+  });
 }
 
-// ---------------- 网络请求与工具 ----------------
+// ---------------- 数据层 ----------------
 
-async function requestOpenAI(context, config, userContent, systemContent) {
+async function getConfig(context) {
+  const saved = await context.storage.get(CONFIG_KEY);
+  return { ...DEFAULT_CONFIG, ...saved };
+}
+
+async function getTemplates(context) {
+  const saved = await context.storage.get(TEMPLATE_KEY);
+  if (!saved || !Array.isArray(saved) || saved.length === 0) {
+    return JSON.parse(JSON.stringify(DEFAULT_TEMPLATES));
+  }
+  return saved;
+}
+
+async function initTemplates(context) {
+  const saved = await context.storage.get(TEMPLATE_KEY);
+  if (!saved) await context.storage.set(TEMPLATE_KEY, DEFAULT_TEMPLATES);
+}
+
+async function saveTemplates(context, tpls) {
+  await context.storage.set(TEMPLATE_KEY, tpls);
+}
+
+// ---------------- 网络层 ----------------
+
+async function requestAI(context, config, selectedText, systemPrompt) {
   const payload = {
     model: config.model,
     messages: [
-      { role: "system", content: systemContent },
-      { role: "user", content: userContent }
+      { role: "system", content: systemPrompt },
+      { role: "user", content: selectedText }
     ],
-    temperature: 0.8
+    temperature: 0.7
   };
 
   const url = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
@@ -294,39 +419,13 @@ async function requestOpenAI(context, config, userContent, systemContent) {
     body: JSON.stringify(payload)
   });
 
-  if (!response.ok) throw new Error(`Status ${response.status}`);
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Code ${response.status}: ${errText.slice(0, 100)}`);
+  }
+
   const data = await response.json();
-  return data.choices?.[0]?.message?.content || 'API 返回为空';
-}
-
-function missingKeyHandler(context) {
-  context.ui.showNotification('请先配置 API Key', { type: 'error' });
-  openSettings(context);
-}
-
-// ---------------- 设置 ----------------
-
-async function loadConfig(context) {
-  return {
-    baseUrl: await context.storage.get('baseUrl') || DEFAULT_CONFIG.baseUrl,
-    model: await context.storage.get('model') || DEFAULT_CONFIG.model,
-    apiKey: await context.storage.get('apiKey') || ''
-  };
-}
-
-export function openSettings(context) {
-  (async () => {
-    const current = await loadConfig(context);
-    const baseUrl = prompt('API Base URL:', current.baseUrl);
-    if (baseUrl === null) return;
-    const model = prompt('模型名称:', current.model);
-    if (model === null) return;
-    const apiKey = prompt('API Key:', current.apiKey);
-    if (apiKey === null) return;
-
-    await context.storage.set('baseUrl', baseUrl);
-    await context.storage.set('model', model);
-    await context.storage.set('apiKey', apiKey);
-    context.ui.notice('配置已更新 ✅', 'ok');
-  })();
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('API 返回为空');
+  return content;
 }
