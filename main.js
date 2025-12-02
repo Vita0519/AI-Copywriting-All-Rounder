@@ -8,7 +8,7 @@ const TEMPLATE_KEY = 'ai_rewriter_templates';
 const DEFAULT_CONFIG = {
   baseUrl: 'https://api.voct.top/v1',
   model: 'gemini-2.5-pro',
-  apiKey: 'sk-Rn7R6m4tZ5qytBf8Csa5S2gf1njwAVPoFFOzCYi7WOdGxF9G'
+  apiKey: ''
 };
 
 // 默认模版
