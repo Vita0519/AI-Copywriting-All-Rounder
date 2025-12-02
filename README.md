@@ -2,6 +2,8 @@
 
 > 专为 flyMD 设计的高级 AI 辅助插件。支持自定义提示词模版、弹窗式配置、强制 Markdown 格式输出。
 
+***https://github.com/flyhunterl/flymd/tree/main?tab=readme-ov-file***
+
 ![Version](https://img.shields.io/badge/version-1.3.0-blue) ![Platform](https://img.shields.io/badge/platform-flyMD-green)
 
 ## ✨ 核心功能
